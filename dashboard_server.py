@@ -1,32 +1,56 @@
+# -*- coding: utf-8 -*-
+"""
+Free Fire Level-Up Bot - Web Dashboard
+Glass / Prism design, 100% English, auto-refresh every 5 seconds.
+
+Mode policy per account:
+  - Matches #1, #2, #3  -> Battle Royale  (needed to unlock Lone Wolf at level 3)
+  - Match #4 onwards     -> 50/50 MIX      (alternating Lone Wolf and Battle Royale)
+  - Manual override via dashboard dropdown still respected.
+"""
+
 import asyncio
 import json
 import os
 import time
 
-# Account level eta ba tar beshi hole BR theke automatic Lone Wolf. 0 dile bondho.
+from typing import Dict, List, Any, Optional
+from aiohttp import web
+
+# Auto-LW level kept for reference (not used for the new rotation logic)
 try:
     AUTO_LW_LEVEL = int(os.environ.get("AUTO_LW_LEVEL", "3"))
 except Exception:
     AUTO_LW_LEVEL = 3
-from typing import Dict, List, Any, Optional
-from aiohttp import web
 
-# ==================== BASE DIRECTORY (ALWAYS ABSOLUTE) ====================
+# Number of mandatory BR matches at account startup (to unlock LW)
+try:
+    BR_UNLOCK_MATCHES = int(os.environ.get("BR_UNLOCK_MATCHES", "3"))
+except Exception:
+    BR_UNLOCK_MATCHES = 3
+
+# Default mode for a brand-new account: "MIX", "BR", or "LONE_WOLF"
+DEFAULT_MATCH_MODE = os.environ.get("DEFAULT_MATCH_MODE", "MIX").strip().upper()
+if DEFAULT_MATCH_MODE not in ("BR", "LONE_WOLF", "MIX"):
+    DEFAULT_MATCH_MODE = "MIX"
+
+
+# ==================== BASE DIRECTORY ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# ✅ AUTO MULTI-FILE SUPPORT - accounts.json, accounts2.json, accounts3.json ...
 import glob as _glob
 
+
 def get_all_account_files_dashboard():
-    """Root-এ accounts*.json সব ফাইল অটো ডিটেক্ট করে"""
     files = sorted(_glob.glob(os.path.join(BASE_DIR, "accounts*.json")))
     if not files:
         files = [os.path.join(BASE_DIR, "accounts.json")]
     return files
 
-ACCOUNTS_FILE_PATH = os.path.join(BASE_DIR, "accounts.json")  # default for new adds
+
+ACCOUNTS_FILE_PATH = os.path.join(BASE_DIR, "accounts.json")
+
 
 # ==================== EMBEDDED HTML DASHBOARD ====================
-# HTML is embedded directly — no external file dependency (works on Termux/mobile)
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -38,33 +62,39 @@ DASHBOARD_HTML = """
 
     <style>
 /* ═══════════════════════════════════════════════════════════
-   AFX LEVEL UP — Glass Neon Theme v2.0
+   AFX LEVEL UP — Glass Prism Theme
    ═══════════════════════════════════════════════════════════ */
 :root {
-    --bg: #05060a;
-    --surface: rgba(18, 21, 30, 0.72);
-    --surface-2: rgba(24, 28, 40, 0.88);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-hi: rgba(255, 255, 255, 0.045);
-    --text: #f2f4f8;
-    --muted: #7c8394;
-    --muted-2: #4a5162;
-    --accent: #00e5ff;
-    --accent-2: #7c5cff;
-    --green: #00ffa3;
-    --yellow: #ffc857;
-    --red: #ff4d6d;
-    --orange: #ff9330;
-    --radius-sm: 12px;
-    --radius-md: 16px;
-    --radius-lg: 22px;
-    --radius-xl: 26px;
+    --bg: #04060c;
+    --bg-2: #070a14;
+    --surface: rgba(22, 26, 40, 0.55);
+    --surface-2: rgba(30, 36, 54, 0.72);
+    --surface-3: rgba(40, 48, 70, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.10);
+    --glass-hi: rgba(255, 255, 255, 0.06);
+    --text: #f4f7ff;
+    --muted: #8f97ab;
+    --muted-2: #565f75;
+    --accent: #6ee7ff;
+    --accent-2: #a78bfa;
+    --accent-3: #34d399;
+    --accent-4: #f472b6;
+    --green: #34d399;
+    --yellow: #fbbf24;
+    --red: #fb7185;
+    --orange: #fb923c;
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-lg: 20px;
+    --radius-xl: 24px;
     --ease: cubic-bezier(.22, 1, .36, 1);
-    --glow-accent: 0 0 40px rgba(0, 229, 255, 0.18);
-    --glow-green: 0 0 30px rgba(0, 255, 163, 0.2);
+    --glow-accent: 0 0 40px rgba(110, 231, 255, 0.20);
+    --glow-accent-2: 0 0 40px rgba(167, 139, 250, 0.20);
 }
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
+
 body {
     min-height: 100vh;
     color: var(--text);
@@ -74,188 +104,271 @@ body {
     position: relative;
     overflow-x: hidden;
 }
+
+/* Ambient prism background */
 body::before {
     content: "";
     position: fixed;
     inset: -50%;
     background:
-        radial-gradient(circle at 20% 20%, rgba(0,229,255,.10), transparent 40%),
-        radial-gradient(circle at 80% 60%, rgba(124,92,255,.10), transparent 45%),
-        radial-gradient(circle at 50% 100%, rgba(0,255,163,.08), transparent 40%);
+        radial-gradient(circle at 20% 20%, rgba(110,231,255,.12), transparent 42%),
+        radial-gradient(circle at 80% 30%, rgba(167,139,250,.12), transparent 45%),
+        radial-gradient(circle at 60% 85%, rgba(52,211,153,.10), transparent 42%),
+        radial-gradient(circle at 10% 90%, rgba(244,114,182,.10), transparent 42%);
     z-index: -1;
-    animation: bgFloat 20s ease-in-out infinite;
+    animation: prismFloat 24s ease-in-out infinite;
 }
-@keyframes bgFloat {
-    0%,100% { transform: translate(0,0) scale(1); }
-    50%     { transform: translate(-3%,2%) scale(1.05); }
+@keyframes prismFloat {
+    0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+    33%      { transform: translate(-2%, 1%) rotate(2deg) scale(1.05); }
+    66%      { transform: translate(2%, -1%) rotate(-2deg) scale(1.03); }
 }
+
 body.modal-open { overflow: hidden; }
 button, input, select { font: inherit; }
 button { border: 0; cursor: pointer; }
-::selection { background: var(--accent); color: #000; }
+::selection { background: var(--accent); color: #04060c; }
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, #2b3040, #1a1d28);
+    background: linear-gradient(180deg, rgba(110,231,255,.4), rgba(167,139,250,.4));
     border-radius: 999px;
 }
-::-webkit-scrollbar-thumb:hover { background: #3a4055; }
-
-/* HEADER */
-.header {
-    position: sticky; top: 0; z-index: 50;
-    height: 68px;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 28px;
-    background: rgba(8,10,16,.72);
-    border-bottom: 1px solid var(--glass-border);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(110,231,255,.7), rgba(167,139,250,.7));
 }
+
+/* ========= HEADER ========= */
+.header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    height: 68px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 28px;
+    background: rgba(6, 10, 20, 0.72);
+    border-bottom: 1px solid var(--glass-border);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+}
+
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .brand-icon {
-    width: 30px; height: 30px; flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
     color: var(--accent);
-    filter: drop-shadow(0 0 8px rgba(0,229,255,.6));
+    filter: drop-shadow(0 0 10px rgba(110,231,255,.7));
     animation: iconPulse 3s ease-in-out infinite;
 }
 @keyframes iconPulse {
-    0%,100% { filter: drop-shadow(0 0 6px rgba(0,229,255,.5)); }
-    50%     { filter: drop-shadow(0 0 14px rgba(0,229,255,.9)); }
+    0%, 100% { filter: drop-shadow(0 0 8px rgba(110,231,255,.5)); }
+    50%      { filter: drop-shadow(0 0 16px rgba(167,139,250,.9)); }
 }
 .brand-text { display: flex; align-items: baseline; gap: 8px; }
 .brand-name {
-    font-size: 15px; font-weight: 800;
+    font-size: 15px;
+    font-weight: 800;
     letter-spacing: 0.02em;
-    background: linear-gradient(135deg, #fff 30%, var(--accent) 100%);
+    background: linear-gradient(135deg, #fff 30%, var(--accent) 60%, var(--accent-2) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
 }
 .brand-by { color: var(--muted-2); font-size: 10px; font-weight: 500; }
+
 .global-controls {
-    display: flex; align-items: center; gap: 10px; flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
     justify-content: center;
 }
+
 .global-mode-select {
-    height: 38px; padding: 0 34px 0 14px;
-    background: rgba(18,21,30,.9); color: #cbd2e0;
+    height: 38px;
+    padding: 0 34px 0 14px;
+    background: rgba(22,26,40,.75);
+    color: #cbd2e0;
     border: 1px solid var(--glass-border);
     border-radius: 11px;
-    font-size: 11px; font-weight: 650;
-    cursor: pointer; outline: none;
-    appearance: none; -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237c8394' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 12px center;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238f97ab' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
     transition: all .3s var(--ease);
-    min-width: 185px;
+    min-width: 200px;
 }
-.global-mode-select:hover { border-color: rgba(0,229,255,.4); color: #fff; box-shadow: 0 0 0 3px rgba(0,229,255,.06); }
-.global-mode-select.br-all { color: var(--yellow); border-color: rgba(255,200,87,.4); }
-.global-mode-select.lw-all { color: var(--green); border-color: rgba(0,255,163,.3); }
-.global-mode-select.auto-all { color: var(--accent); border-color: rgba(0,229,255,.4); }
+.global-mode-select:hover {
+    border-color: rgba(110,231,255,.4);
+    color: #fff;
+    box-shadow: 0 0 0 3px rgba(110,231,255,.08);
+}
 .global-mode-select option { background: #0d1018; color: #ccc; }
 
-/* EXP limit */
+/* EXP limit control */
 .exp-limit-wrap {
-    display: flex; align-items: center; height: 38px;
+    display: flex;
+    align-items: center;
+    height: 38px;
     border: 1px solid var(--glass-border);
-    border-radius: 11px; overflow: hidden;
-    background: rgba(18,21,30,.9);
+    border-radius: 11px;
+    overflow: hidden;
+    background: rgba(22,26,40,.75);
     transition: all .3s var(--ease);
 }
-.exp-limit-wrap:hover { border-color: rgba(255,147,48,.4); }
-.exp-limit-wrap.limit-active { border-color: rgba(255,147,48,.5); box-shadow: 0 0 0 3px rgba(255,147,48,.05); }
-.exp-limit-label { padding: 0 8px 0 12px; font-size: 11px; font-weight: 650; color: var(--muted); white-space: nowrap; user-select: none; }
+.exp-limit-wrap:hover { border-color: rgba(251,146,60,.4); }
+.exp-limit-wrap.limit-active { border-color: rgba(251,146,60,.55); box-shadow: 0 0 0 3px rgba(251,146,60,.06); }
+.exp-limit-label {
+    padding: 0 8px 0 12px;
+    font-size: 11px;
+    font-weight: 650;
+    color: var(--muted);
+    white-space: nowrap;
+    user-select: none;
+}
 .exp-limit-wrap.limit-active .exp-limit-label { color: var(--orange); }
 .exp-limit-input {
-    width: 78px; background: transparent; border: none; outline: none;
-    color: #fff; font-size: 12px; font-weight: 700;
-    padding: 0 4px; text-align: center;
+    width: 78px;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 4px;
+    text-align: center;
 }
 .exp-limit-input::-webkit-inner-spin-button,
 .exp-limit-input::-webkit-outer-spin-button { -webkit-appearance: none; }
 .exp-limit-btn {
-    height: 38px; padding: 0 14px;
-    background: rgba(255,147,48,.1);
-    border: none; border-left: 1px solid rgba(255,147,48,.2);
+    height: 38px;
+    padding: 0 14px;
+    background: rgba(251,146,60,.12);
+    border: none;
+    border-left: 1px solid rgba(251,146,60,.22);
     color: var(--orange);
-    font-size: 11px; font-weight: 700; cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
     transition: all .2s var(--ease);
 }
 .exp-limit-btn:hover { background: var(--orange); color: #000; }
 .exp-limit-btn:disabled { opacity: .5; cursor: not-allowed; }
 
-/* Toggle */
+/* Bot toggle */
 .toggle-container {
-    display: flex; align-items: center; gap: 10px;
-    padding: 0 14px; height: 38px;
-    background: rgba(18,21,30,.9);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 14px;
+    height: 38px;
+    background: rgba(22,26,40,.75);
     border: 1px solid var(--glass-border);
-    border-radius: 11px; cursor: pointer;
+    border-radius: 11px;
+    cursor: pointer;
     transition: all .3s var(--ease);
 }
-.toggle-container:hover { border-color: rgba(0,255,163,.35); }
-.toggle-label { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; user-select: none; }
+.toggle-container:hover { border-color: rgba(52,211,153,.4); }
+.toggle-label {
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    user-select: none;
+}
 .toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: 0 0 auto; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
 .toggle-slider {
-    position: absolute; cursor: pointer; inset: 0;
-    background: #2a2f3d; border-radius: 999px;
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: #2a2f3d;
+    border-radius: 999px;
     transition: all .3s var(--ease);
     border: 1px solid #3a4155;
 }
 .toggle-slider:before {
-    position: absolute; content: "";
-    height: 16px; width: 16px;
-    left: 2px; top: 2px;
-    background: #6b7385; border-radius: 50%;
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    top: 2px;
+    background: #6b7385;
+    border-radius: 50%;
     transition: all .3s var(--ease);
 }
 .toggle-switch input:checked + .toggle-slider {
-    background: rgba(0,255,163,.15);
-    border-color: rgba(0,255,163,.4);
+    background: rgba(52,211,153,.18);
+    border-color: rgba(52,211,153,.45);
 }
 .toggle-switch input:checked + .toggle-slider:before {
     transform: translateX(18px);
     background: var(--green);
-    box-shadow: 0 0 12px rgba(0,255,163,.8), 0 0 4px rgba(0,255,163,.9);
+    box-shadow: 0 0 12px rgba(52,211,153,.9), 0 0 4px rgba(52,211,153,1);
 }
-.toggle-status { font-size: 11px; font-weight: 800; min-width: 24px; letter-spacing: .06em; user-select: none; }
-.toggle-status.on  { color: var(--green); text-shadow: 0 0 8px rgba(0,255,163,.4); }
+.toggle-status {
+    font-size: 11px;
+    font-weight: 800;
+    min-width: 24px;
+    letter-spacing: .06em;
+    user-select: none;
+}
+.toggle-status.on  { color: var(--green); text-shadow: 0 0 8px rgba(52,211,153,.5); }
 .toggle-status.off { color: var(--red); }
 
 /* Header buttons */
 .header-actions { display: flex; align-items: center; gap: 10px; }
 .add-btn {
-    height: 40px; padding: 0 18px;
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    color: #05060a;
+    height: 40px;
+    padding: 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #04060c;
     background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
     border-radius: 12px;
-    font-size: 12px; font-weight: 750;
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: 0.01em;
     transition: all .35s var(--ease);
-    box-shadow: 0 4px 16px rgba(0,229,255,.18), inset 0 1px 0 rgba(255,255,255,.15);
+    box-shadow:
+        0 4px 16px rgba(110,231,255,.25),
+        inset 0 1px 0 rgba(255,255,255,.2);
 }
 .add-btn svg { width: 15px; height: 15px; stroke-width: 2.4; }
 .add-btn:hover {
     transform: translateY(-2px);
-    box-shadow: 0 10px 32px rgba(0,229,255,.35), inset 0 1px 0 rgba(255,255,255,.25);
+    box-shadow:
+        0 10px 32px rgba(167,139,250,.4),
+        inset 0 1px 0 rgba(255,255,255,.3);
     filter: brightness(1.08);
 }
 .add-btn:active { transform: translateY(0) scale(.97); }
+
 #reloadJsonBtn {
-    background: rgba(0,255,163,.08) !important;
+    background: rgba(52,211,153,.10) !important;
     color: var(--green) !important;
-    border: 1px solid rgba(0,255,163,.25) !important;
+    border: 1px solid rgba(52,211,153,.30) !important;
     box-shadow: none;
 }
 #reloadJsonBtn:hover {
-    background: rgba(0,255,163,.16) !important;
-    box-shadow: 0 8px 24px rgba(0,255,163,.15) !important;
+    background: rgba(52,211,153,.2) !important;
+    box-shadow: 0 8px 24px rgba(52,211,153,.2) !important;
 }
 
-/* MAIN */
+/* ========= MAIN ========= */
 .main { width: min(1440px, 100%); margin: 0 auto; padding-bottom: 60px; }
 
 /* Stats */
@@ -268,81 +381,96 @@ button { border: 0; cursor: pointer; }
 .stat-card {
     position: relative;
     min-height: 118px;
-    display: flex; flex-direction: column; justify-content: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     padding: 22px;
     background: var(--surface);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
     overflow: hidden;
     transition: all .4s var(--ease);
 }
 .stat-card::before {
     content: "";
-    position: absolute; inset: 0;
-    background: linear-gradient(135deg, var(--glass-hi), transparent 40%);
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, var(--glass-hi), transparent 45%);
     pointer-events: none;
 }
 .stat-card::after {
     content: "";
-    position: absolute; left: 0; top: 0; bottom: 0;
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
     width: 3px;
     background: linear-gradient(180deg, var(--accent), var(--accent-2));
-    opacity: 0.6;
+    opacity: 0.7;
     transition: opacity .3s ease;
 }
 .stat-card:hover {
     transform: translateY(-4px);
-    border-color: rgba(0,229,255,.25);
+    border-color: rgba(110,231,255,.3);
     box-shadow: var(--glow-accent), 0 20px 60px rgba(0,0,0,.5);
 }
 .stat-card:hover::after { opacity: 1; }
 .stat-label {
     margin-bottom: 8px;
     color: var(--muted);
-    font-size: 10px; font-weight: 650;
-    letter-spacing: .14em; text-transform: uppercase;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: .14em;
+    text-transform: uppercase;
 }
 .stat-value {
     color: #fff;
-    font-size: 30px; line-height: 1;
-    font-weight: 800; letter-spacing: -0.04em;
+    font-size: 30px;
+    line-height: 1;
+    font-weight: 800;
+    letter-spacing: -0.04em;
     font-variant-numeric: tabular-nums;
     transition: color .3s ease;
 }
 .stat-card:hover .stat-value {
     color: var(--accent);
-    text-shadow: 0 0 20px rgba(0,229,255,.3);
+    text-shadow: 0 0 24px rgba(110,231,255,.4);
 }
 
 /* Accounts */
 .accounts-section { padding: 32px 28px; }
 .section-header {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 18px;
 }
 .section-title {
     color: var(--muted);
-    font-size: 11px; font-weight: 700;
-    letter-spacing: .16em; text-transform: uppercase;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .16em;
+    text-transform: uppercase;
 }
 .account-count { color: var(--muted-2); font-size: 11px; font-weight: 600; }
+
 .accounts-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
     gap: 22px;
 }
 
-/* Account Card */
+/* Account card */
 .account-card {
     position: relative;
     padding: 24px;
     background: var(--surface);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
     overflow: hidden;
     opacity: 0;
     transform: translateY(12px) scale(.98);
@@ -350,43 +478,57 @@ button { border: 0; cursor: pointer; }
     animation-delay: calc(var(--index, 0) * 50ms);
     transition: all .4s var(--ease);
 }
-@keyframes cardIn { to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes cardIn {
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
 .account-card::before {
     content: "";
-    position: absolute; inset: 0;
-    background: linear-gradient(135deg, var(--glass-hi), transparent 45%);
-    pointer-events: none; border-radius: inherit;
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, var(--glass-hi), transparent 50%);
+    pointer-events: none;
+    border-radius: inherit;
 }
 .account-card:hover {
     transform: translateY(-5px);
     background: var(--surface-2);
-    border-color: rgba(0,229,255,.2);
+    border-color: rgba(110,231,255,.25);
     box-shadow:
-        0 0 0 1px rgba(0,229,255,.08),
+        0 0 0 1px rgba(110,231,255,.1),
         0 24px 60px rgba(0,0,0,.55),
         var(--glow-accent);
 }
 .account-card:has(.status.in-match)::after {
     content: "";
-    position: absolute; top: 14px; right: 14px;
-    width: 8px; height: 8px; border-radius: 50%;
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
     background: var(--green);
-    box-shadow: 0 0 12px var(--green);
+    box-shadow: 0 0 14px var(--green);
     animation: livePulse 1.5s ease-in-out infinite;
 }
 @keyframes livePulse {
-    0%,100% { transform: scale(1); opacity: 1; }
-    50%     { transform: scale(1.4); opacity: .5; }
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(1.4); opacity: .5; }
 }
+
 .account-top {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 20px;
 }
 .account-identity { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .avatar {
-    width: 52px; height: 52px; flex: 0 0 auto;
-    display: grid; place-items: center;
-    background: linear-gradient(135deg, rgba(0,229,255,.1), rgba(124,92,255,.1));
+    width: 52px;
+    height: 52px;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(135deg, rgba(110,231,255,.15), rgba(167,139,250,.15));
     border: 1px solid var(--glass-border);
     border-radius: 15px;
     color: var(--accent);
@@ -394,52 +536,101 @@ button { border: 0; cursor: pointer; }
 }
 .account-card:hover .avatar {
     transform: scale(1.06) rotate(-3deg);
-    border-color: rgba(0,229,255,.35);
-    box-shadow: 0 0 24px rgba(0,229,255,.2);
+    border-color: rgba(110,231,255,.4);
+    box-shadow: 0 0 28px rgba(110,231,255,.25);
 }
 .avatar svg { width: 26px; height: 26px; }
 .identity-info { min-width: 0; }
 .nickname {
     max-width: 220px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 15px; font-weight: 750;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+    font-weight: 750;
     letter-spacing: -0.01em;
 }
 .uid {
     margin-top: 5px;
     color: var(--muted-2);
-    font-size: 11px; font-weight: 550;
-    font-variant-numeric: tabular-nums; letter-spacing: .02em;
+    font-size: 11px;
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .02em;
 }
 
 /* Status */
 .status {
-    display: inline-flex; align-items: center; gap: 7px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     padding: 7px 13px;
     border-radius: 999px;
-    font-size: 10px; font-weight: 750; letter-spacing: .1em;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: .1em;
     border: 1px solid transparent;
-    white-space: nowrap; text-transform: uppercase;
+    white-space: nowrap;
+    text-transform: uppercase;
 }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
-.status.online { color: var(--green); background: rgba(0,255,163,.07); border-color: rgba(0,255,163,.18); }
-.status.online .status-dot { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulseGreen 1.8s ease-in-out infinite; }
-.status.searching { color: var(--yellow); background: rgba(255,200,87,.07); border-color: rgba(255,200,87,.2); }
-.status.searching .status-dot { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); animation: pulseYellow 1.4s ease-in-out infinite; }
-.status.in-match { color: #fff; background: linear-gradient(90deg, rgba(0,229,255,.12), rgba(124,92,255,.12)); border-color: rgba(0,229,255,.3); }
-.status.in-match .status-dot { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-.status.offline, .status.error { color: var(--red); background: rgba(255,77,109,.08); border-color: rgba(255,77,109,.18); }
+.status.online {
+    color: var(--green);
+    background: rgba(52,211,153,.08);
+    border-color: rgba(52,211,153,.22);
+}
+.status.online .status-dot {
+    background: var(--green);
+    box-shadow: 0 0 10px var(--green);
+    animation: pulseGreen 1.8s ease-in-out infinite;
+}
+.status.searching {
+    color: var(--yellow);
+    background: rgba(251,191,36,.08);
+    border-color: rgba(251,191,36,.22);
+}
+.status.searching .status-dot {
+    background: var(--yellow);
+    box-shadow: 0 0 10px var(--yellow);
+    animation: pulseYellow 1.4s ease-in-out infinite;
+}
+.status.in-match {
+    color: #fff;
+    background: linear-gradient(90deg, rgba(110,231,255,.15), rgba(167,139,250,.15));
+    border-color: rgba(110,231,255,.35);
+}
+.status.in-match .status-dot {
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+}
+.status.offline, .status.error {
+    color: var(--red);
+    background: rgba(251,113,133,.08);
+    border-color: rgba(251,113,133,.22);
+}
 .status.offline .status-dot, .status.error .status-dot { background: var(--red); }
-.status.paused { color: var(--orange); background: rgba(255,147,48,.08); border-color: rgba(255,147,48,.18); }
+.status.paused {
+    color: var(--orange);
+    background: rgba(251,146,60,.08);
+    border-color: rgba(251,146,60,.22);
+}
 .status.paused .status-dot { background: var(--orange); }
-@keyframes pulseGreen  { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-@keyframes pulseYellow { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes pulseGreen {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .35; }
+}
+@keyframes pulseYellow {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .35; }
+}
 
 /* EXP 3-col */
 .exp-three-col {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 10px; padding: 16px;
-    background: rgba(8,10,16,.6);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    padding: 16px;
+    background: rgba(10,14,24,.55);
     border: 1px solid var(--glass-border);
     border-radius: 14px;
     margin-bottom: 18px;
@@ -447,41 +638,66 @@ button { border: 0; cursor: pointer; }
 .exp-col { display: flex; flex-direction: column; gap: 6px; }
 .exp-col-label {
     color: var(--muted-2);
-    font-size: 9px; font-weight: 650;
-    letter-spacing: .1em; text-transform: uppercase;
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: .1em;
+    text-transform: uppercase;
 }
 .exp-col-value {
     color: #e8ecf3;
-    font-size: 16px; font-weight: 800;
+    font-size: 16px;
+    font-weight: 800;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
 }
 .exp-col-value.gained {
     color: var(--green);
-    text-shadow: 0 0 14px rgba(0,255,163,.35);
+    text-shadow: 0 0 14px rgba(52,211,153,.4);
 }
-.exp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.exp-label { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.exp-value { color: var(--muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.exp-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.exp-label {
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+.exp-value {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
 .progress {
-    width: 100%; height: 8px;
-    background: rgba(8,10,16,.8);
+    width: 100%;
+    height: 8px;
+    background: rgba(10,14,24,.8);
     border: 1px solid var(--glass-border);
-    border-radius: 999px; overflow: hidden;
+    border-radius: 999px;
+    overflow: hidden;
     position: relative;
 }
 .progress-bar {
-    height: 100%; width: 0;
-    background: linear-gradient(90deg, var(--accent), var(--green));
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
     border-radius: inherit;
-    box-shadow: 0 0 16px rgba(0,229,255,.45);
+    box-shadow: 0 0 18px rgba(110,231,255,.5);
     transition: width .9s var(--ease);
-    position: relative; overflow: hidden;
+    position: relative;
+    overflow: hidden;
 }
 .progress-bar::after {
     content: "";
-    position: absolute; inset: 0;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,.4), transparent);
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent);
     animation: shimmer 2.2s linear infinite;
 }
 @keyframes shimmer {
@@ -491,66 +707,118 @@ button { border: 0; cursor: pointer; }
 
 /* Footer */
 .account-footer {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-top: 18px; padding-top: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 18px;
+    padding-top: 16px;
     border-top: 1px solid var(--glass-border);
 }
-.last-match-label { color: var(--muted-2); font-size: 9px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
-.last-match-value { margin-top: 5px; color: var(--muted); font-size: 11px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.last-match-label {
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+}
+.last-match-value {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 550;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .acc-info {
-    margin: 10px 0 0; padding: 10px 12px; border-radius: 10px;
-    font-size: 11px; line-height: 1.5; color: #b5bcc9;
-    background: rgba(0,229,255,.05);
-    border: 1px solid rgba(0,229,255,.12);
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #b5bcc9;
+    background: rgba(110,231,255,.06);
+    border: 1px solid rgba(110,231,255,.15);
     word-break: break-word;
     font-family: ui-monospace, monospace;
 }
 .acc-error {
-    margin: 10px 0 0; padding: 10px 12px; border-radius: 10px;
-    font-size: 11px; line-height: 1.5; color: var(--red);
-    background: rgba(255,77,109,.06);
-    border: 1px solid rgba(255,77,109,.16);
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--red);
+    background: rgba(251,113,133,.06);
+    border: 1px solid rgba(251,113,133,.18);
     word-break: break-word;
     font-family: ui-monospace, monospace;
 }
-.match-type-row { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; }
-.match-type-label { color: var(--muted-2); font-size: 9px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+
+/* Match type select */
+.match-type-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0 0;
+}
+.match-type-label {
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
 .match-type-select {
-    flex: 1; height: 34px; padding: 0 10px;
-    background: rgba(8,10,16,.7); color: #ccc;
+    flex: 1;
+    height: 34px;
+    padding: 0 10px;
+    background: rgba(10,14,24,.7);
+    color: #ccc;
     border: 1px solid var(--glass-border);
     border-radius: 10px;
-    font-size: 11px; font-weight: 600;
-    cursor: pointer; outline: none;
-    appearance: none; -webkit-appearance: none;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
     transition: all .3s var(--ease);
 }
-.match-type-select:hover, .match-type-select:focus { border-color: var(--accent); color: #fff; }
-.match-type-select.br-mode { color: var(--yellow); border-color: rgba(255,200,87,.3); }
-.match-type-select.lw-mode { color: var(--green);  border-color: rgba(0,255,163,.25); }
+.match-type-select:hover, .match-type-select:focus {
+    border-color: var(--accent);
+    color: #fff;
+}
+.match-type-select.br-mode { color: var(--yellow); border-color: rgba(251,191,36,.35); }
+.match-type-select.lw-mode { color: var(--green);  border-color: rgba(52,211,153,.3); }
+.match-type-select.mix-mode { color: var(--accent); border-color: rgba(110,231,255,.4); }
 .match-type-select option { background: #0d1018; color: #ccc; }
+
 .card-actions { display: flex; gap: 8px; }
 .icon-btn {
-    width: 38px; height: 38px;
-    display: grid; place-items: center;
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
     color: var(--muted);
-    background: rgba(8,10,16,.6);
+    background: rgba(10,14,24,.6);
     border: 1px solid var(--glass-border);
     border-radius: 11px;
     transition: all .3s var(--ease);
 }
 .icon-btn:hover {
     color: var(--accent);
-    background: rgba(0,229,255,.08);
-    border-color: rgba(0,229,255,.35);
+    background: rgba(110,231,255,.1);
+    border-color: rgba(110,231,255,.4);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0,229,255,.15);
+    box-shadow: 0 6px 20px rgba(110,231,255,.2);
 }
 .icon-btn.delete:hover {
     color: var(--red);
-    background: rgba(255,77,109,.08);
-    border-color: rgba(255,77,109,.3);
-    box-shadow: 0 6px 20px rgba(255,77,109,.15);
+    background: rgba(251,113,133,.1);
+    border-color: rgba(251,113,133,.35);
+    box-shadow: 0 6px 20px rgba(251,113,133,.2);
 }
 .icon-btn:active { transform: scale(.92); }
 .icon-btn svg { width: 16px; height: 16px; }
@@ -558,90 +826,138 @@ button { border: 0; cursor: pointer; }
 /* Empty */
 .empty-state {
     min-height: 260px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     padding: 40px;
     background: var(--surface);
-    border: 1px dashed rgba(0,229,255,.15);
+    border: 1px dashed rgba(110,231,255,.2);
     border-radius: var(--radius-lg);
     text-align: center;
     backdrop-filter: blur(20px);
     transition: all .4s var(--ease);
 }
-.empty-state:hover { border-color: rgba(0,229,255,.3); background: var(--surface-2); }
+.empty-state:hover {
+    border-color: rgba(110,231,255,.4);
+    background: var(--surface-2);
+}
 .empty-icon {
-    width: 56px; height: 56px;
-    display: grid; place-items: center;
+    width: 56px;
+    height: 56px;
+    display: grid;
+    place-items: center;
     margin-bottom: 16px;
     color: var(--accent);
-    background: rgba(0,229,255,.06);
-    border: 1px solid rgba(0,229,255,.2);
+    background: rgba(110,231,255,.08);
+    border: 1px solid rgba(110,231,255,.25);
     border-radius: 16px;
     box-shadow: var(--glow-accent);
 }
 .empty-icon svg { width: 26px; height: 26px; }
 .empty-title { font-size: 15px; font-weight: 750; }
-.empty-text { max-width: 360px; margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.empty-text {
+    max-width: 360px;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.65;
+}
 
 /* Modal */
 .overlay {
-    position: fixed; inset: 0; z-index: 100;
-    display: grid; place-items: center; padding: 20px;
-    background: rgba(2,4,8,.8);
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(2,4,10,.82);
     backdrop-filter: blur(20px) saturate(180%);
     -webkit-backdrop-filter: blur(20px) saturate(180%);
-    opacity: 0; visibility: hidden; pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
     transition: all .35s ease;
 }
-.overlay.open { opacity: 1; visibility: visible; pointer-events: auto; }
+.overlay.open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
 .modal {
     width: min(480px, 100%);
     max-height: calc(100vh - 40px);
     overflow-y: auto;
     padding: 26px;
-    background: linear-gradient(180deg, rgba(18,21,30,.98), rgba(12,15,22,.98));
+    background: linear-gradient(180deg, rgba(22,26,40,.98), rgba(14,18,30,.98));
     border: 1px solid var(--glass-border);
     border-radius: 26px;
     box-shadow:
-        0 0 0 1px rgba(255,255,255,.03),
+        0 0 0 1px rgba(255,255,255,.04),
         0 40px 100px rgba(0,0,0,.7),
         var(--glow-accent);
     opacity: 0;
     transform: translateY(20px) scale(.95);
     transition: all .45s var(--ease);
 }
-.overlay.open .modal { opacity: 1; transform: translateY(0) scale(1); }
-.modal-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 21px; }
+.overlay.open .modal {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+.modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 21px;
+}
 .modal-title { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
 .modal-subtitle { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .modal-close {
-    width: 34px; height: 34px;
-    display: grid; place-items: center;
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
     color: var(--muted);
-    background: rgba(8,10,16,.8);
+    background: rgba(10,14,24,.8);
     border: 1px solid var(--glass-border);
     border-radius: 11px;
     transition: all .3s var(--ease);
 }
-.modal-close:hover { color: #fff; background: rgba(0,229,255,.1); border-color: rgba(0,229,255,.3); transform: rotate(90deg); }
+.modal-close:hover {
+    color: #fff;
+    background: rgba(110,231,255,.12);
+    border-color: rgba(110,231,255,.35);
+    transform: rotate(90deg);
+}
 .modal-close svg { width: 15px; height: 15px; }
 
 /* Tabs */
 .tabs {
-    display: grid; grid-template-columns: repeat(2, 1fr);
-    gap: 5px; padding: 4px; margin-bottom: 20px;
-    background: rgba(4,6,10,.8);
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 5px;
+    padding: 4px;
+    margin-bottom: 20px;
+    background: rgba(4,6,12,.8);
     border: 1px solid var(--glass-border);
     border-radius: 14px;
 }
 .tab {
     height: 37px;
-    color: var(--muted); background: transparent;
+    color: var(--muted);
+    background: transparent;
     border-radius: 10px;
-    font-size: 10px; font-weight: 700;
+    font-size: 10px;
+    font-weight: 700;
     transition: all .3s var(--ease);
 }
 .tab:hover { color: #ccc; }
-.tab.active { color: #fff; background: rgba(0,229,255,.1); box-shadow: 0 5px 15px rgba(0,229,255,.1); }
+.tab.active {
+    color: #fff;
+    background: rgba(110,231,255,.12);
+    box-shadow: 0 5px 15px rgba(110,231,255,.15);
+}
 .tab:active { transform: scale(.97); }
 
 /* Form */
@@ -653,70 +969,110 @@ button { border: 0; cursor: pointer; }
 }
 .field { margin-bottom: 15px; }
 .field label {
-    display: block; margin-bottom: 7px;
-    color: var(--muted); font-size: 9px; font-weight: 700;
-    letter-spacing: .1em; text-transform: uppercase;
+    display: block;
+    margin-bottom: 7px;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
 }
 .input, .select {
-    width: 100%; height: 43px; padding: 0 13px;
-    color: #fff; background: rgba(4,6,10,.6);
+    width: 100%;
+    height: 43px;
+    padding: 0 13px;
+    color: #fff;
+    background: rgba(4,6,12,.6);
     border: 1px solid var(--glass-border);
-    border-radius: 12px; outline: none;
+    border-radius: 12px;
+    outline: none;
     transition: all .3s var(--ease);
 }
 .input::placeholder { color: var(--muted-2); }
 .input:focus, .select:focus {
-    background: rgba(4,6,10,.9);
-    border-color: rgba(0,229,255,.4);
-    box-shadow: 0 0 0 3px rgba(0,229,255,.06);
+    background: rgba(4,6,12,.9);
+    border-color: rgba(110,231,255,.45);
+    box-shadow: 0 0 0 3px rgba(110,231,255,.08);
 }
 .select {
-    appearance: none; -webkit-appearance: none; cursor: pointer;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237c8394' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 13px center;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238f97ab' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 13px center;
     padding-right: 38px;
 }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
 .validation-note {
-    display: flex; align-items: flex-start; gap: 9px;
-    margin-top: 3px; padding: 12px;
-    color: var(--muted); background: rgba(4,6,10,.5);
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-top: 3px;
+    padding: 12px;
+    color: var(--muted);
+    background: rgba(4,6,12,.5);
     border: 1px solid var(--glass-border);
     border-radius: 12px;
-    font-size: 9px; line-height: 1.55;
+    font-size: 9px;
+    line-height: 1.55;
 }
-.validation-note svg { width: 14px; height: 14px; flex: 0 0 auto; margin-top: 1px; color: var(--muted); }
+.validation-note svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    margin-top: 1px;
+    color: var(--muted);
+}
 .modal-footer { display: flex; gap: 9px; margin-top: 21px; }
 .cancel-btn, .submit-btn {
-    height: 43px; border-radius: 12px;
-    font-size: 10px; font-weight: 750;
+    height: 43px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 750;
     transition: all .3s var(--ease);
 }
 .cancel-btn {
-    flex: 1; color: var(--muted); background: rgba(8,10,16,.8);
+    flex: 1;
+    color: var(--muted);
+    background: rgba(10,14,24,.8);
     border: 1px solid var(--glass-border);
 }
-.cancel-btn:hover { color: #fff; background: rgba(0,229,255,.06); border-color: rgba(0,229,255,.25); transform: translateY(-2px); }
+.cancel-btn:hover {
+    color: #fff;
+    background: rgba(110,231,255,.08);
+    border-color: rgba(110,231,255,.3);
+    transform: translateY(-2px);
+}
 .submit-btn {
     flex: 1.5;
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    color: #05060a;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #04060c;
     background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
     border: none;
-    box-shadow: 0 4px 16px rgba(0,229,255,.18);
+    box-shadow: 0 4px 16px rgba(110,231,255,.25);
 }
 .submit-btn:hover {
     transform: translateY(-2px);
-    box-shadow: 0 10px 30px rgba(0,229,255,.35);
+    box-shadow: 0 10px 30px rgba(167,139,250,.4);
     filter: brightness(1.08);
 }
 .submit-btn:active, .cancel-btn:active { transform: scale(.97); }
-.submit-btn:disabled { cursor: not-allowed; opacity: .55; transform: none; box-shadow: none; }
+.submit-btn:disabled {
+    cursor: not-allowed;
+    opacity: .55;
+    transform: none;
+    box-shadow: none;
+}
 .submit-btn svg { width: 14px; height: 14px; }
 
 /* Spinner */
 .spinner {
-    width: 14px; height: 14px;
+    width: 14px;
+    height: 14px;
     border: 2px solid rgba(0,0,0,.18);
     border-top-color: #000;
     border-radius: 50%;
@@ -726,64 +1082,82 @@ button { border: 0; cursor: pointer; }
 
 /* Toast */
 .toast-container {
-    position: fixed; right: 20px; bottom: 20px; z-index: 200;
-    display: flex; flex-direction: column; gap: 8px;
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     pointer-events: none;
 }
 .toast {
-    min-width: 250px; max-width: 360px;
-    display: flex; align-items: center; gap: 10px;
+    min-width: 250px;
+    max-width: 360px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 12px 14px;
-    color: #ddd; background: rgba(18,21,30,.95);
+    color: #ddd;
+    background: rgba(22,26,40,.96);
     border: 1px solid var(--glass-border);
     border-radius: 13px;
     box-shadow: 0 18px 45px rgba(0,0,0,.55);
-    opacity: 0; transform: translateY(12px) scale(.96);
+    opacity: 0;
+    transform: translateY(12px) scale(.96);
     transition: all .35s var(--ease);
 }
 .toast.show { opacity: 1; transform: translateY(0) scale(1); }
 .toast-icon {
-    width: 18px; height: 18px;
-    display: grid; place-items: center;
-    flex: 0 0 auto; color: var(--green);
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    color: var(--green);
 }
 .toast.error .toast-icon { color: var(--red); }
 .toast-icon svg { width: 16px; height: 16px; }
 .toast-message { font-size: 10px; line-height: 1.4; font-weight: 600; }
 
-/* ✅ Refresh indicator (top-right) */
+/* Refresh indicator */
 .refresh-indicator {
     position: fixed;
-    top: 80px; right: 20px;
+    top: 80px;
+    right: 20px;
     z-index: 40;
-    display: flex; align-items: center; gap: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: 6px 12px;
-    background: rgba(18,21,30,.85);
+    background: rgba(22,26,40,.88);
     border: 1px solid var(--glass-border);
     border-radius: 999px;
-    font-size: 10px; font-weight: 650;
+    font-size: 10px;
+    font-weight: 650;
     color: var(--muted);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     transition: all .3s ease;
     pointer-events: none;
-    opacity: 0.85;
+    opacity: 0.9;
 }
 .refresh-indicator .refresh-dot {
-    width: 6px; height: 6px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: var(--accent);
-    box-shadow: 0 0 8px var(--accent);
+    box-shadow: 0 0 10px var(--accent);
     animation: refreshPulse 5s ease-in-out infinite;
 }
 @keyframes refreshPulse {
-    0% { transform: scale(.6); opacity: .5; }
-    5% { transform: scale(1.2); opacity: 1; }
-    15% { transform: scale(1); opacity: 1; }
+    0%   { transform: scale(.6); opacity: .5; }
+    5%   { transform: scale(1.3); opacity: 1; }
+    15%  { transform: scale(1); opacity: 1; }
     100% { transform: scale(.6); opacity: .5; }
 }
 .refresh-indicator.refreshing {
-    border-color: rgba(0,229,255,.4);
+    border-color: rgba(110,231,255,.45);
     color: var(--accent);
 }
 
@@ -826,7 +1200,6 @@ button { border: 0; cursor: pointer; }
 
 <body>
 
-    <!-- ✅ Refresh indicator -->
     <div class="refresh-indicator" id="refreshIndicator">
         <span class="refresh-dot"></span>
         <span id="refreshText">Auto 5s</span>
@@ -843,25 +1216,24 @@ button { border: 0; cursor: pointer; }
             </div>
         </div>
 
-        <!-- ✅ Global Controls: Mode Selector + ON/OFF Toggle -->
         <div class="global-controls">
-            <select class="global-mode-select" id="globalModeSelect" onchange="setGlobalMode(this.value, this)" title="সব আইডির মোড একসাথে পরিবর্তন করুন">
-                <option value="">🎮 সব মোড সিলেক্ট</option>
-                <option value="LONE_WOLF">🐺 সব: Lone Wolf</option>
-                <option value="BR">⚔ সব: Battle Royale</option>
-                <option value="AUTO">🔄 Auto Level Mode</option>
+            <select class="global-mode-select" id="globalModeSelect" onchange="setGlobalMode(this.value, this)" title="Change mode for all accounts">
+                <option value="">Select mode for all</option>
+                <option value="MIX">All: 50/50 Mix (LW + BR)</option>
+                <option value="BR">All: Battle Royale</option>
+                <option value="LONE_WOLF">All: Lone Wolf</option>
             </select>
 
-            <div class="exp-limit-wrap limit-active" id="expLimitWrap" title="এই পরিমাণ EXP অর্জনের পর আইডি অটো ডিলিট হবে। 0 = লিমিট বন্ধ">
-                <span class="exp-limit-label">🎯 EXP:</span>
-                <input type="number" class="exp-limit-input" id="expLimitInput" placeholder="45000" min="0" step="1000" onkeydown="expLimitKeydown(event)" title="EXP লিমিট — এই সংখ্যায় পৌঁছালে আইডি অটো ডিলিট হবে"/>
+            <div class="exp-limit-wrap limit-active" id="expLimitWrap" title="Auto-delete the account when it gains this many EXP. Set 0 to disable.">
+                <span class="exp-limit-label">EXP:</span>
+                <input type="number" class="exp-limit-input" id="expLimitInput" placeholder="45000" min="0" step="1000" onkeydown="expLimitKeydown(event)" title="Auto-delete threshold (EXP gained)">
                 <button class="exp-limit-btn" id="expLimitBtn" type="button" onclick="setExpLimit()">Set</button>
             </div>
 
             <div class="toggle-container" onclick="document.getElementById('globalToggle').click()">
                 <span class="toggle-label">BOT</span>
                 <label class="toggle-switch" onclick="event.stopPropagation()">
-                    <input type="checkbox" id="globalToggle" checked onchange="toggleGlobal(this)" title="ON: সব আইডি ম্যাচ শুরু / OFF: সব বন্ধ">
+                    <input type="checkbox" id="globalToggle" checked onchange="toggleGlobal(this)" title="ON: start matches / OFF: pause all">
                     <span class="toggle-slider"></span>
                 </label>
                 <span id="toggleStatus" class="toggle-status on">ON</span>
@@ -869,7 +1241,7 @@ button { border: 0; cursor: pointer; }
         </div>
 
         <div class="header-actions">
-            <button class="add-btn" id="reloadJsonBtn" type="button" style="background:rgba(0,255,163,.08); color:#00ffa3; border:1px solid rgba(0,255,163,.25);" title="accounts.json reload করুন — delete করা accounts আবার চালু হবে">
+            <button class="add-btn" id="reloadJsonBtn" type="button" title="Reload accounts from accounts*.json (clears blacklist)">
                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="15" height="15" stroke-width="2.2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
                     <path d="M3 3v5h5"/>
@@ -912,7 +1284,6 @@ button { border: 0; cursor: pointer; }
         </section>
     </main>
 
-    <!-- ADD BOT MODAL -->
     <div class="overlay" id="modalOverlay" aria-hidden="true">
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
             <div class="modal-header">
@@ -933,7 +1304,6 @@ button { border: 0; cursor: pointer; }
                 <button class="tab" data-tab="token" type="button">Access Token</button>
             </div>
 
-            <!-- GUEST FORM -->
             <form class="form-section active" id="guestForm" data-form="guest">
                 <div class="field">
                     <label for="uid">UID</label>
@@ -956,7 +1326,6 @@ button { border: 0; cursor: pointer; }
                 </div>
             </form>
 
-            <!-- TOKEN FORM -->
             <form class="form-section" id="tokenForm" data-form="token">
                 <div class="field">
                     <label for="accessToken">Access Token</label>
@@ -981,7 +1350,7 @@ button { border: 0; cursor: pointer; }
                     <path d="M12 10V16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
                     <circle cx="12" cy="7" r="1" fill="currentColor"/>
                 </svg>
-                <span>Your account credentials are validated before the bot starts. Only one active bot slot is currently available.</span>
+                <span>Credentials are validated before the bot starts. Only one active slot is available per account.</span>
             </div>
 
             <div class="modal-footer">
@@ -1040,7 +1409,6 @@ button { border: 0; cursor: pointer; }
             setExpLimit: "/api/settings/exp-limit"
         };
 
-        // ✅ 5 SECONDS REFRESH
         const REFRESH_INTERVAL_MS = 5000;
 
         let currentTab = "guest";
@@ -1166,7 +1534,7 @@ button { border: 0; cursor: pointer; }
         function setSubmitLoading(loading) {
             submitBtn.disabled = loading;
             if (loading) {
-                submitBtn.innerHTML = `<span class="spinner"></span><span>Validating...</span>`;
+                submitBtn.innerHTML = '<span class="spinner"></span><span>Validating...</span>';
             } else {
                 submitBtn.innerHTML = `
                     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1250,7 +1618,6 @@ button { border: 0; cursor: pointer; }
                     }
                 }
 
-                // ✅ Reset countdown after successful fetch
                 _refreshCountdown = 5;
                 refreshText.textContent = "Auto 5s";
             } catch (error) {
@@ -1328,7 +1695,7 @@ button { border: 0; cursor: pointer; }
             if (sel) {
                 const mt = account.match_type || "LONE_WOLF";
                 if (sel.value !== mt) sel.value = mt;
-                sel.className = "match-type-select " + (mt === "BR" ? "br-mode" : "lw-mode");
+                sel.className = "match-type-select " + (mt === "BR" ? "br-mode" : (mt === "MIX" ? "mix-mode" : "lw-mode"));
             }
 
             const lastMatchVal = card.querySelector(".last-match-value");
@@ -1406,9 +1773,10 @@ button { border: 0; cursor: pointer; }
             }
 
             const nickname = escapeHTML(account.nickname ?? account.name ?? "Unknown");
-            const uid = escapeHTML(account.uid ?? account.player_uid ?? account.playerId ?? "—");
+            const uid = escapeHTML(account.uid ?? account.player_uid ?? account.playerId ?? "-");
             const lastMatch = escapeHTML(account.last_match_time ?? account.last_match ?? account.lastMatch ?? "No match yet");
             const safeUid = encodeURIComponent(account.uid ?? account.player_uid ?? account.playerId ?? "");
+            const mt = account.match_type || "LONE_WOLF";
 
             return `
                 <article class="account-card" data-card-uid="${uid}" style="--index:${index}">
@@ -1460,12 +1828,13 @@ button { border: 0; cursor: pointer; }
 
                     <div class="match-type-row">
                         <span class="match-type-label">Match</span>
-                        <select class="match-type-select ${(account.match_type || 'LONE_WOLF') === 'BR' ? 'br-mode' : 'lw-mode'}"
+                        <select class="match-type-select ${mt === 'BR' ? 'br-mode' : (mt === 'MIX' ? 'mix-mode' : 'lw-mode')}"
                                 data-uid="${safeUid}"
                                 onchange="setMatchType('${safeUid}', this.value, this)"
-                                title="কোন ম্যাচ খেলবেন সিলেক্ট করুন">
-                            <option value="LONE_WOLF" ${(account.match_type || 'LONE_WOLF') === 'LONE_WOLF' ? 'selected' : ''}>🐺 Lone Wolf</option>
-                            <option value="BR" ${(account.match_type || 'LONE_WOLF') === 'BR' ? 'selected' : ''}>⚔ Battle Royale (BR)</option>
+                                title="Select match mode">
+                            <option value="LONE_WOLF" ${mt === 'LONE_WOLF' ? 'selected' : ''}>Lone Wolf</option>
+                            <option value="BR" ${mt === 'BR' ? 'selected' : ''}>Battle Royale</option>
+                            <option value="MIX" ${mt === 'MIX' ? 'selected' : ''}>50/50 Mix (LW + BR)</option>
                         </select>
                     </div>
 
@@ -1512,9 +1881,7 @@ button { border: 0; cursor: pointer; }
                     _globalRunning = running;
                     statusEl.textContent = running ? "ON" : "OFF";
                     statusEl.className = "toggle-status " + (running ? "on" : "off");
-                    showToast(running
-                        ? "✅ সব আইডি চালু হয়েছে — ম্যাচ শুরু হবে"
-                        : "🛑 সব আইডি বন্ধ হয়েছে — নতুন ম্যাচ হবে না");
+                    showToast(running ? "All bots resumed." : "All bots paused.");
                     await fetchStats();
                 } else {
                     checkbox.checked = prevChecked;
@@ -1536,16 +1903,10 @@ button { border: 0; cursor: pointer; }
                 });
                 const data = await response.json().catch(() => ({}));
                 if (data.status === "ok") {
-                    if (selectEl) {
-                        selectEl.classList.remove("br-all", "lw-all", "auto-all");
-                        if (mode === "BR") selectEl.classList.add("br-all");
-                        else if (mode === "LONE_WOLF") selectEl.classList.add("lw-all");
-                        else if (mode === "AUTO") selectEl.classList.add("auto-all");
-                    }
-                    const label = mode === "BR" ? "⚔ সব: Battle Royale"
-                                : mode === "LONE_WOLF" ? "🐺 সব: Lone Wolf"
-                                : "🔄 Auto Level Mode";
-                    showToast("✅ সব আইডি → " + label);
+                    const label = mode === "BR" ? "All: Battle Royale"
+                                : mode === "LONE_WOLF" ? "All: Lone Wolf"
+                                : "All: 50/50 Mix";
+                    showToast("Mode updated: " + label);
                     await fetchStats();
                 } else {
                     showToast("Mode change failed: " + (data.error || "unknown"), true);
@@ -1564,7 +1925,7 @@ button { border: 0; cursor: pointer; }
             const raw = input.value.trim().replace(/,/g, "");
             const limit = parseInt(raw, 10);
             if (isNaN(limit) || limit < 0) {
-                showToast("❌ সঠিক সংখ্যা দিন (0 = লিমিট বন্ধ)", true);
+                showToast("Enter a valid number (0 = disable).", true);
                 return;
             }
             btn.disabled = true;
@@ -1578,16 +1939,16 @@ button { border: 0; cursor: pointer; }
                 const data = await res.json().catch(() => ({}));
                 if (data.status === "ok") {
                     const msg = limit === 0
-                        ? "🔓 EXP লিমিট বন্ধ করা হয়েছে"
-                        : `🎯 EXP লিমিট সেট: ${limit.toLocaleString()}`;
-                    showToast("✅ " + msg);
+                        ? "EXP limit disabled."
+                        : `EXP limit set to ${limit.toLocaleString()}.`;
+                    showToast(msg);
                     input.dataset.saved = limit;
                     updateExpLimitStyle(limit);
                 } else {
-                    showToast("❌ " + (data.error || "অজানা এরর"), true);
+                    showToast(data.error || "Unknown error", true);
                 }
             } catch (e) {
-                showToast("❌ Network error: " + e.message, true);
+                showToast("Network error: " + e.message, true);
             } finally {
                 btn.disabled = false;
                 btn.textContent = "Set";
@@ -1601,10 +1962,10 @@ button { border: 0; cursor: pointer; }
             wrap.classList.remove("limit-active", "limit-off");
             if (limit > 0) {
                 wrap.classList.add("limit-active");
-                input.title = `EXP লিমিট: ${Number(limit).toLocaleString()} — এই পরিমাণ EXP অর্জনের পর আইডি অটো ডিলিট হবে`;
+                input.title = `Auto-delete at ${Number(limit).toLocaleString()} EXP gained`;
             } else {
                 wrap.classList.add("limit-off");
-                input.title = "EXP লিমিট বন্ধ (0 = কোনো লিমিট নেই)";
+                input.title = "EXP limit disabled (0 = no limit)";
             }
         }
 
@@ -1625,14 +1986,16 @@ button { border: 0; cursor: pointer; }
                 const data = await response.json();
                 if (data.status === "ok") {
                     if (selectEl) {
-                        selectEl.classList.remove("br-mode", "lw-mode");
-                        selectEl.classList.add(matchType === "BR" ? "br-mode" : "lw-mode");
+                        selectEl.classList.remove("br-mode", "lw-mode", "mix-mode");
+                        selectEl.classList.add(matchType === "BR" ? "br-mode" : (matchType === "MIX" ? "mix-mode" : "lw-mode"));
                     }
-                    const label = matchType === "BR" ? "⚔ Battle Royale" : "🐺 Lone Wolf";
-                    showToast(`UID ${decodeURIComponent(uid)} → ${label}`);
+                    const label = matchType === "BR" ? "Battle Royale"
+                                : matchType === "MIX" ? "50/50 Mix"
+                                : "Lone Wolf";
+                    showToast(`UID ${decodeURIComponent(uid)} set to ${label}.`);
                 } else {
                     showToast("Match type change failed: " + (data.error || "unknown"), true);
-                    if (selectEl) selectEl.value = matchType === "BR" ? "LONE_WOLF" : "BR";
+                    if (selectEl) selectEl.value = "LONE_WOLF";
                 }
             } catch (e) {
                 showToast("Network error: " + e.message, true);
@@ -1684,14 +2047,8 @@ button { border: 0; cursor: pointer; }
             toast.innerHTML = `
                 <div class="toast-icon">
                     ${isError
-                        ? `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
-                                <path d="M12 8V13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                                <circle cx="12" cy="16.5" r="1" fill="currentColor"/>
-                           </svg>`
-                        : `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M20 6L9 17L4 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                           </svg>`}
+                        ? '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 8V13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="currentColor"/></svg>'
+                        : '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17L4 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'}
                 </div>
                 <div class="toast-message">${escapeHTML(message)}</div>`;
             document.getElementById("toastContainer").appendChild(toast);
@@ -1702,7 +2059,6 @@ button { border: 0; cursor: pointer; }
             }, 3200);
         }
 
-        // ✅ Countdown ticker — updates "Auto Xs" every second
         function startCountdownTicker() {
             setInterval(() => {
                 _refreshCountdown--;
@@ -1711,10 +2067,8 @@ button { border: 0; cursor: pointer; }
             }, 1000);
         }
 
-        // START
         fetchStats();
         startCountdownTicker();
-        // ✅ AUTO REFRESH EVERY 5 SECONDS
         refreshTimer = setInterval(fetchStats, REFRESH_INTERVAL_MS);
     </script>
 
@@ -1723,7 +2077,7 @@ button { border: 0; cursor: pointer; }
 """
 
 
-# Global bot state shared between app.py and Web Dashboard
+# ==================== GLOBAL BOT STATE ====================
 class BotState:
     def __init__(self):
         self.accounts: Dict[str, Dict[str, Any]] = {}
@@ -1735,68 +2089,80 @@ class BotState:
         self.account_workers: Dict[str, asyncio.Task] = {}
         self.refresh_callbacks: Dict[str, Any] = {}
         self.account_credentials: Dict[str, Dict[str, Any]] = {}
-        # ✅ DELETE করা UID গুলো ব্ল্যাকলিস্টে রাখা হয়
-        # যাতে চলমান worker পুনরায় register করতে না পারে
+        # Blacklist (deleted UIDs)
         self.deleted_uids: set = set()
-        # ✅ প্রতিটি UID-এর জন্য আলাদা match type — "BR" বা "LONE_WOLF"
+        # Per-UID forced mode ("BR", "LONE_WOLF", "MIX")
         self.match_types: Dict[str, str] = {}
-        # ✅ Global ON/OFF — False হলে কোনো আইডি match search করবে না
+        # MIX rotation cursor: uid -> "LONE_WOLF" | "BR"
+        self._current_mode: Dict[str, str] = {}
+        # Global ON/OFF
         self.global_running: bool = True
-        # ✅ AUTO-DELETE: gained_exp এই লিমিট পার হলে আইডি অটো ডিলিট হবে
+        # Auto-delete threshold
         self.exp_limit: int = 45000
-        # ✅ AUTO-DELETE queue: async cleanup-এর জন্য
         self.auto_delete_queue: set = set()
 
+    # ---------- MODE MANAGEMENT ----------
     def set_match_type(self, uid: str, match_type: str):
-        """Dashboard থেকে UID-এর match type সেট করা: 'BR' অথবা 'LONE_WOLF'"""
+        """Force a specific mode for a UID: 'BR', 'LONE_WOLF', or 'MIX'."""
         uid_str = str(uid)
-        allowed = {"BR", "LONE_WOLF"}
+        allowed = {"BR", "LONE_WOLF", "MIX"}
         if match_type not in allowed:
             match_type = "LONE_WOLF"
         self.match_types[uid_str] = match_type
         if uid_str in self.accounts:
             self.accounts[uid_str]["match_type"] = match_type
             self.accounts[uid_str]["last_updated"] = time.strftime("%H:%M:%S")
+        # Fresh MIX rotation starts from LONE_WOLF
+        if match_type == "MIX":
+            self._current_mode[uid_str] = "LONE_WOLF"
 
     def get_match_type(self, uid: str) -> str:
-        """UID-এর বর্তমান match type পড়া — default LONE_WOLF.
-        Level == 2 → auto BR. AUTO_LW_LEVEL (default 3) বা বেশি → auto LONE_WOLF."""
-        uid_str = str(uid)
-        lvl = self.get_account_level(uid_str)
+        """
+        Returns the mode for the NEXT match search.
 
-        # ✅ Level 2 → Auto Battle Royale
-        if lvl == 2:
-            if self.match_types.get(uid_str) != "BR":
-                self.match_types[uid_str] = "BR"
-                if uid_str in self.accounts:
-                    self.accounts[uid_str]["match_type"] = "BR"
-                try:
-                    self.log(f"[AUTO] UID {uid_str} Level {lvl} → Battle Royale (BR)", "success", uid_str)
-                except Exception:
-                    pass
+        Priority order:
+          1) matches_played < BR_UNLOCK_MATCHES  -> BR  (LW is locked until level 3)
+          2) account has explicit MIX mode       -> alternate LW / BR
+          3) account has explicit BR / LONE_WOLF -> that mode
+          4) default                              -> LONE_WOLF
+        """
+        uid_str = str(uid)
+
+        # Rule #1: mandatory BR at startup
+        played = 0
+        if uid_str in self.accounts:
+            played = int(self.accounts[uid_str].get("matches_played", 0) or 0)
+        if played < BR_UNLOCK_MATCHES:
             return "BR"
 
-        # ✅ Level >= AUTO_LW_LEVEL (3) → Auto Lone Wolf
-        mt = self.match_types.get(uid_str, "LONE_WOLF")
-        if mt == "BR" and AUTO_LW_LEVEL > 0 and lvl >= AUTO_LW_LEVEL:
-            self.set_match_type(uid_str, "LONE_WOLF")
-            try:
-                self.log(f"[AUTO] UID {uid_str} Level {lvl} >= {AUTO_LW_LEVEL} → Lone Wolf (LW)", "success", uid_str)
-            except Exception:
-                pass
-            return "LONE_WOLF"
+        # Rule #2 and #3
+        mt = self.match_types.get(uid_str, DEFAULT_MATCH_MODE)
+        if mt == "MIX":
+            return self._current_mode.get(uid_str, "LONE_WOLF")
         return mt
 
+    def advance_match_mode(self, uid: str) -> None:
+        """Called when a match actually begins; flips MIX cursor if applicable."""
+        uid_str = str(uid)
+        mt = self.match_types.get(uid_str, DEFAULT_MATCH_MODE)
+        if mt != "MIX":
+            return
+        current = self._current_mode.get(uid_str, "LONE_WOLF")
+        self._current_mode[uid_str] = "BR" if current == "LONE_WOLF" else "LONE_WOLF"
+
+    def get_account_level(self, uid: str) -> int:
+        uid_str = str(uid)
+        if uid_str in self.accounts:
+            return int(self.accounts[uid_str].get("level", 1) or 1)
+        return 1
+
+    # ---------- AUTO-DELETE ----------
     async def _async_auto_delete(self, uid_str: str):
-        """45000 EXP পূর্ণ হওয়া আইডির async cleanup: worker cancel + JSON ফাইল থেকে মুছে ফেলা"""
         try:
             short_key = uid_str.replace("tok_", "")[:10]
-
-            # ✅ STEP 1: bot_state থেকে সরাও
             self.accounts.pop(uid_str, None)
             self.recalc_totals()
 
-            # ✅ STEP 2: accounts*.json ফাইল থেকে atomic delete
             for accounts_file in get_all_account_files_dashboard():
                 if not os.path.exists(accounts_file):
                     continue
@@ -1818,7 +2184,6 @@ class BotState:
                 except Exception:
                     pass
 
-            # ✅ STEP 3: Worker task বাতিল করো
             for worker_key in [uid_str, short_key]:
                 if worker_key in self.account_workers:
                     task = self.account_workers.pop(worker_key)
@@ -1829,31 +2194,25 @@ class BotState:
                         pass
 
             self.auto_delete_queue.discard(uid_str)
-            self.log(f"[AUTO-DELETE] UID {uid_str} → 45000 EXP লিমিট পূর্ণ। আইডি সম্পূর্ণরূপে মুছে ফেলা হয়েছে।", "warning", uid_str)
+            self.log(f"[AUTO-DELETE] UID {uid_str} reached the EXP limit and was removed.", "warning", uid_str)
         except Exception as e:
             self.log(f"[AUTO-DELETE ERROR] UID {uid_str}: {e}", "error", uid_str)
 
-    def get_account_level(self, uid: str) -> int:
-        """UID-এর current level পড়া — default 1"""
-        uid_str = str(uid)
-        if uid_str in self.accounts:
-            return int(self.accounts[uid_str].get("level", 1) or 1)
-        return 1
-
+    # ---------- LOGGING ----------
     def log(self, message: str, level: str = "info", uid: Optional[str] = None):
         entry = {
             "time": time.strftime("%H:%M:%S"),
             "level": level,
             "message": message,
-            "uid": uid
+            "uid": uid,
         }
         self.logs.append(entry)
         if len(self.logs) > self.max_logs:
             self.logs.pop(0)
 
+    # ---------- REGISTRATION ----------
     def register_account(self, uid: str, nickname: str, region: str, level: int, exp: int, likes: int = 0):
         uid_str = str(uid)
-        # ✅ ব্ল্যাকলিস্টে থাকলে re-register করবে না — এটাই মূল সমস্যা ছিল
         if uid_str in self.deleted_uids:
             return
         if uid_str not in self.accounts:
@@ -1871,7 +2230,7 @@ class BotState:
                 "active_matches": 0,
                 "last_match_time": None,
                 "last_updated": time.strftime("%H:%M:%S"),
-                "match_type": self.match_types.get(uid_str, "LONE_WOLF")
+                "match_type": self.match_types.get(uid_str, DEFAULT_MATCH_MODE),
             }
         else:
             acc = self.accounts[uid_str]
@@ -1881,7 +2240,6 @@ class BotState:
                 acc["region"] = region
             if level:
                 acc["level"] = level
-                self.get_match_type(uid_str)   # level barhle BR -> LW auto switch
             acc["current_exp"] = exp
             acc["gained_exp"] = max(0, exp - acc["initial_exp"])
             acc["likes"] = likes
@@ -1891,7 +2249,6 @@ class BotState:
 
     def update_exp(self, uid: str, current_exp: int, level: Optional[int] = None):
         uid_str = str(uid)
-        # ✅ ডিলিট করা আইডি আপডেট হবে না
         if uid_str in self.deleted_uids:
             return
         if uid_str in self.accounts:
@@ -1900,36 +2257,30 @@ class BotState:
             acc["current_exp"] = current_exp
             if level is not None and level > 0:
                 acc["level"] = level
-                self.get_match_type(uid_str)   # level barhle BR -> LW auto switch
             acc["gained_exp"] = max(0, current_exp - acc["initial_exp"])
             acc["last_updated"] = time.strftime("%H:%M:%S")
             diff = current_exp - old_exp
             if diff > 0:
-                self.log(f"Account {acc['nickname']} ({uid_str}) gained +{diff} EXP! Total: +{acc['gained_exp']}", "success", uid_str)
+                self.log(f"{acc['nickname']} ({uid_str}) gained +{diff} EXP (total +{acc['gained_exp']}).", "success", uid_str)
             self.recalc_totals()
 
-            # ✅ AUTO-DELETE: gained_exp ≥ exp_limit হলে আইডি অটোমেটিক মুছে যাবে
             if self.exp_limit > 0 and acc["gained_exp"] >= self.exp_limit and uid_str not in self.auto_delete_queue:
                 self.auto_delete_queue.add(uid_str)
                 nickname = acc.get("nickname", uid_str)
                 self.log(
-                    f"[AUTO-DELETE] {nickname} ({uid_str}) → {acc['gained_exp']} EXP অর্জন করেছে (লিমিট: {self.exp_limit})। আইডি অটো ডিলিট হচ্ছে...",
-                    "warning", uid_str
+                    f"[AUTO-DELETE] {nickname} ({uid_str}) reached {acc['gained_exp']} EXP (limit: {self.exp_limit}). Deleting...",
+                    "warning", uid_str,
                 )
-                # তৎক্ষণাৎ blacklist করো — worker আর কোনো match খেলবে না
                 self.deleted_uids.add(uid_str)
                 self.match_types.pop(uid_str, None)
-                # Async cleanup: worker cancel + JSON থেকে মুছে ফেলা
+                self._current_mode.pop(uid_str, None)
                 try:
-                    asyncio.get_event_loop().create_task(
-                        self._async_auto_delete(uid_str)
-                    )
+                    asyncio.get_event_loop().create_task(self._async_auto_delete(uid_str))
                 except RuntimeError:
-                    pass  # event loop না থাকলে sync delete-ই যথেষ্ট
+                    pass
 
     def update_status(self, uid: str, status: str, active_matches: Optional[int] = None):
         uid_str = str(uid)
-        # ✅ ডিলিট করা আইডি status update হবে না
         if uid_str in self.deleted_uids:
             return
         if uid_str in self.accounts:
@@ -1961,7 +2312,7 @@ class BotState:
             self.accounts[uid_str]["matches_played"] += 1
             self.accounts[uid_str]["last_match_time"] = time.strftime("%H:%M:%S")
             self.accounts[uid_str]["last_updated"] = time.strftime("%H:%M:%S")
-            self.log(f"Account {self.accounts[uid_str]['nickname']} finished Match #{self.accounts[uid_str]['matches_played']}", "info", uid_str)
+            self.log(f"{self.accounts[uid_str]['nickname']} finished match #{self.accounts[uid_str]['matches_played']}.", "info", uid_str)
 
     def recalc_totals(self):
         self.total_gained_exp = sum(acc.get("gained_exp", 0) for acc in self.accounts.values())
@@ -1971,9 +2322,7 @@ bot_state = BotState()
 
 
 # ==================== HTTP HANDLERS ====================
-
 async def handle_index(request: web.Request) -> web.Response:
-    # HTML is embedded — always works regardless of file system state
     return web.Response(text=DASHBOARD_HTML, content_type="text/html", charset="utf-8")
 
 
@@ -1988,7 +2337,7 @@ async def handle_get_stats(request: web.Request) -> web.Response:
         "logs": bot_state.logs[-60:],
         "uptime": int(time.time() - bot_state.start_time),
         "global_running": bot_state.global_running,
-        "exp_limit": bot_state.exp_limit
+        "exp_limit": bot_state.exp_limit,
     })
 
 
@@ -2011,7 +2360,6 @@ async def handle_add_account(request: web.Request) -> web.Response:
                 return web.json_response({"status": "error", "error": "UID and Password are required"})
             existing = [acc for acc in existing if str(acc.get("uid")) != uid]
             existing.append({"uid": uid, "password": pwd})
-            # ✅ Re-add করলে blacklist থেকে সরাও — না হলে আর চালু হবে না
             bot_state.deleted_uids.discard(uid)
         elif "token" in data:
             token = str(data["token"]).strip()
@@ -2019,7 +2367,6 @@ async def handle_add_account(request: web.Request) -> web.Response:
                 return web.json_response({"status": "error", "error": "Token is required"})
             existing = [acc for acc in existing if acc.get("token") != token]
             existing.append({"token": token})
-            # ✅ Token re-add করলে blacklist থেকে সরাও
             bot_state.deleted_uids.discard(token[:10])
             bot_state.deleted_uids.discard(f"tok_{token[:10]}")
         else:
@@ -2030,7 +2377,6 @@ async def handle_add_account(request: web.Request) -> web.Response:
 
         bot_state.log(f"New account added: {data.get('uid') or 'Token'}", "success")
 
-        # Trigger dynamic worker launch
         if "on_account_added" in bot_state.refresh_callbacks:
             asyncio.create_task(bot_state.refresh_callbacks["on_account_added"](data))
 
@@ -2046,10 +2392,8 @@ async def handle_delete_account(request: web.Request) -> web.Response:
         if not uid:
             return web.json_response({"status": "error", "error": "uid missing"})
 
-        # token-based worker key: "tok_abcdefghij" → "abcdefghij"
         short_key = uid.replace("tok_", "")[:10]
 
-        # ✅ সব accounts*.json ফাইলে খুঁজে atomic write দিয়ে delete করে
         for accounts_file in get_all_account_files_dashboard():
             if not os.path.exists(accounts_file):
                 continue
@@ -2058,15 +2402,12 @@ async def handle_delete_account(request: web.Request) -> web.Response:
                     existing = json.load(f)
                 if not isinstance(existing, list):
                     continue
-
                 new_list = [
                     acc for acc in existing
                     if str(acc.get("uid", "")).strip() != uid
                     and str(acc.get("token", ""))[:10] != short_key
                 ]
-
                 if len(new_list) < len(existing):
-                    # ✅ Atomic write — crash হলে ফাইল নষ্ট হবে না
                     tmp_file = accounts_file + ".tmp"
                     with open(tmp_file, "w", encoding="utf-8") as f:
                         json.dump(new_list, f, indent=2, ensure_ascii=False)
@@ -2074,19 +2415,13 @@ async def handle_delete_account(request: web.Request) -> web.Response:
             except Exception:
                 pass
 
-        # ✅ STEP 1: আগেই ব্ল্যাকলিস্টে যোগ করো
-        # এর ফলে চলমান worker আর re-register করতে পারবে না
         bot_state.deleted_uids.add(uid)
         bot_state.deleted_uids.add(short_key)
 
-        # ✅ STEP 2: bot_state থেকে সরাও এবং totals আপডেট করো
         if uid in bot_state.accounts:
             del bot_state.accounts[uid]
             bot_state.recalc_totals()
 
-        # ✅ STEP 3: Worker বাতিল করো এবং সম্পূর্ণভাবে await করো
-        # break ছিল আগে — এর ফলে দুটো key-এর একটাই cancel হতো
-        # এখন দুটোই cancel করা হবে এবং properly await করা হবে
         for worker_key in [uid, short_key]:
             if worker_key in bot_state.account_workers:
                 task = bot_state.account_workers.pop(worker_key)
@@ -2094,9 +2429,9 @@ async def handle_delete_account(request: web.Request) -> web.Response:
                 try:
                     await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
                 except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                    pass  # cancel হয়েছে — এটাই স্বাভাবিক
+                    pass
 
-        bot_state.log(f"Account {uid} deleted from dashboard and accounts.json.", "warning", uid)
+        bot_state.log(f"Account {uid} deleted.", "warning", uid)
         return web.json_response({"status": "ok"})
     except Exception as e:
         return web.json_response({"status": "error", "error": str(e)})
@@ -2114,23 +2449,15 @@ async def handle_refresh_account(request: web.Request) -> web.Response:
 
 
 async def handle_reload_accounts(request: web.Request) -> web.Response:
-    """
-    accounts*.json ফাইল থেকে নতুন করে সব account load করে।
-    - deleted_uids blacklist পুরোপুরি clear হয়
-    - যে accounts এখন চলছে না কিন্তু JSON এ আছে সেগুলো স্বয়ংক্রিয়ভাবে চালু হয়
-    - ইতিমধ্যে চলমান accounts অপরিবর্তিত থাকে
-    """
     try:
-        # ✅ STEP 1: পুরো blacklist clear করো
         cleared = len(bot_state.deleted_uids)
         bot_state.deleted_uids.clear()
 
-        # ✅ STEP 2: app.py-এর reload callback ডাকো
         added = 0
         if "on_reload_accounts" in bot_state.refresh_callbacks:
             added = await bot_state.refresh_callbacks["on_reload_accounts"]()
 
-        msg = f"Reload complete: {cleared} blacklisted UIDs cleared, {added} new account(s) started."
+        msg = f"Reload complete: {cleared} blacklisted UID(s) cleared, {added} new account(s) started."
         bot_state.log(msg, "success")
         return web.json_response({"status": "ok", "message": msg, "cleared": cleared, "started": added})
     except Exception as e:
@@ -2138,33 +2465,30 @@ async def handle_reload_accounts(request: web.Request) -> web.Response:
 
 
 async def handle_set_match_type(request: web.Request) -> web.Response:
-    """Dashboard থেকে UID-এর match type পরিবর্তন করা: BR অথবা LONE_WOLF"""
     try:
         data = await request.json()
         uid = str(data.get("uid", "")).strip()
         match_type = str(data.get("match_type", "LONE_WOLF")).strip().upper()
         if not uid:
             return web.json_response({"status": "error", "error": "UID required"}, status=400)
-        if match_type not in ("BR", "LONE_WOLF"):
-            return web.json_response({"status": "error", "error": "Invalid match_type. Use BR or LONE_WOLF"}, status=400)
+        if match_type not in ("BR", "LONE_WOLF", "MIX"):
+            return web.json_response({"status": "error", "error": "Invalid match_type. Use BR, LONE_WOLF, or MIX."}, status=400)
         bot_state.set_match_type(uid, match_type)
-        label = "⚔ Battle Royale" if match_type == "BR" else "🐺 Lone Wolf"
-        bot_state.log(f"[MATCH TYPE] UID {uid} → {label}", "info", uid)
+        label = "Battle Royale" if match_type == "BR" else ("50/50 Mix" if match_type == "MIX" else "Lone Wolf")
+        bot_state.log(f"[MODE] UID {uid} -> {label}", "info", uid)
         return web.json_response({"status": "ok", "uid": uid, "match_type": match_type})
     except Exception as e:
         return web.json_response({"status": "error", "error": str(e)}, status=500)
 
 
 async def handle_toggle_global(request: web.Request) -> web.Response:
-    """সব আইডি ON/OFF করা — running=true হলে ম্যাচ শুরু, false হলে বন্ধ"""
     try:
         data = await request.json()
         running = bool(data.get("running", True))
         bot_state.global_running = running
-        state_str = "চালু (ON)" if running else "বন্ধ (OFF)"
-        bot_state.log(f"[GLOBAL] সব বট {state_str} করা হয়েছে", "success" if running else "warning")
+        state_str = "ON" if running else "OFF"
+        bot_state.log(f"[GLOBAL] Bot state set to {state_str}.", "success" if running else "warning")
 
-        # If turning OFF, update all account statuses to PAUSED
         if not running:
             for uid_str in list(bot_state.accounts.keys()):
                 if uid_str not in bot_state.deleted_uids:
@@ -2172,7 +2496,6 @@ async def handle_toggle_global(request: web.Request) -> web.Response:
                     if status not in ("OFFLINE", "ERROR", "CONNECTING"):
                         bot_state.accounts[uid_str]["status"] = "PAUSED"
         else:
-            # Turning ON — reset PAUSED statuses to ONLINE
             for uid_str in list(bot_state.accounts.keys()):
                 if uid_str not in bot_state.deleted_uids:
                     if bot_state.accounts[uid_str].get("status") == "PAUSED":
@@ -2184,42 +2507,25 @@ async def handle_toggle_global(request: web.Request) -> web.Response:
 
 
 async def handle_set_all_mode(request: web.Request) -> web.Response:
-    """ড্যাশবোর্ডের সব আইডির match type একসাথে পরিবর্তন করা"""
     try:
         data = await request.json()
         mode = str(data.get("mode", "LONE_WOLF")).strip().upper()
-        if mode not in ("BR", "LONE_WOLF", "AUTO"):
-            return web.json_response({"status": "error", "error": "Invalid mode. Use BR, LONE_WOLF or AUTO"}, status=400)
+        if mode not in ("BR", "LONE_WOLF", "MIX"):
+            return web.json_response({"status": "error", "error": "Invalid mode. Use BR, LONE_WOLF, or MIX."}, status=400)
 
         changed = 0
-        if mode == "AUTO":
-            # ✅ AUTO: সব আইডির manually-forced match_type সরিয়ে দেওয়া
-            # get_match_type() এর Level-based auto-logic আবার কাজ করবে
-            for uid_str in list(bot_state.accounts.keys()):
-                if uid_str not in bot_state.deleted_uids:
-                    # match_types থেকে সরালে get_match_type() নিজেই level দেখে সিদ্ধান্ত নেবে
-                    bot_state.match_types.pop(uid_str, None)
-                    if uid_str in bot_state.accounts:
-                        lvl = bot_state.get_account_level(uid_str)
-                        auto_mt = "BR" if lvl == 2 else "LONE_WOLF"
-                        bot_state.accounts[uid_str]["match_type"] = auto_mt
-                    changed += 1
-            label = "🔄 Auto Level Mode"
-        else:
-            for uid_str in list(bot_state.accounts.keys()):
-                if uid_str not in bot_state.deleted_uids:
-                    bot_state.set_match_type(uid_str, mode)
-                    changed += 1
-            label = "⚔ Battle Royale" if mode == "BR" else "🐺 Lone Wolf"
-
-        bot_state.log(f"[GLOBAL MODE] সব {changed}টি আইডি → {label}", "success")
+        for uid_str in list(bot_state.accounts.keys()):
+            if uid_str not in bot_state.deleted_uids:
+                bot_state.set_match_type(uid_str, mode)
+                changed += 1
+        label = "Battle Royale" if mode == "BR" else ("50/50 Mix" if mode == "MIX" else "Lone Wolf")
+        bot_state.log(f"[GLOBAL MODE] All {changed} account(s) -> {label}.", "success")
         return web.json_response({"status": "ok", "mode": mode, "changed": changed})
     except Exception as e:
         return web.json_response({"status": "error", "error": str(e)}, status=500)
 
 
 async def handle_set_exp_limit(request: web.Request) -> web.Response:
-    """EXP লিমিট আপডেট করা — এই সীমা পার হলে আইডি অটো ডিলিট হবে"""
     try:
         data = await request.json()
         raw = data.get("exp_limit", None)
@@ -2232,7 +2538,7 @@ async def handle_set_exp_limit(request: web.Request) -> web.Response:
         if limit < 0:
             return web.json_response({"status": "error", "error": "exp_limit cannot be negative"}, status=400)
         bot_state.exp_limit = limit
-        msg = f"EXP লিমিট সেট: {limit:,}" if limit > 0 else "EXP লিমিট বন্ধ (0 = কোনো লিমিট নেই)"
+        msg = f"EXP limit set to {limit:,}." if limit > 0 else "EXP limit disabled."
         bot_state.log(f"[EXP LIMIT] {msg}", "success")
         return web.json_response({"status": "ok", "exp_limit": limit})
     except Exception as e:
